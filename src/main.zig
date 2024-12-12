@@ -22,13 +22,15 @@ const Addresses = union(enum){
     two: struct {
         start: Address,
         stop: Address,
-        active: bool,
+        active: bool = false,
     },
 };
 
 const Command = union(enum) {
+
     // Sub-expression
-    braces: []CommandTuple,
+    open_brace: void,
+    close_brace: void,
     // Write text to standard output before reading the next line of input.
     a: []u8,
     // Branch to label, or end of script if empty.
@@ -127,7 +129,7 @@ const Label = []u8;
 const CommandTuple = struct {
     addresses: Addresses,
     invert_match: bool,
-    commands: Command,
+    command: Command,
 };
 
 var PatternSpace = [8192]u8{};
@@ -152,6 +154,7 @@ pub fn main() !void {
     // parseCommands
     // open files
     // read line
+    // if end of stream, activate $ matches with last pattern space
     // execute commands
     // print line if not suppressed
     // pre-next-line-commands (append, etc.)
@@ -163,6 +166,7 @@ pub fn main() !void {
 //     errdefer command_tuple.deinit();
 
 //     // parseAddress
+//     // parseCommand
 
 //     return try command_tuple.toOwnedSlice();
 // }
@@ -171,12 +175,16 @@ pub fn main() !void {
 
 // }
 
-// fn parseAddresses(input: *io.StreamSource) !Addresses {
-//     const input_reader = input.reader();
-//     var addr1: ?Address = null;
-//     var addr2: ?Address = null;
-
-// }
+fn parseAddresses(input: *io.StreamSource) !Addresses {
+    const addr1 = try parseAddress(input) orelse return .none;
+    try gobbleSpace(input);
+    if (try input.reader().readByte() != ',') {
+        try input.seekBy(-1);
+        return .{ .one = addr1 };
+    }
+    const addr2 = try parseAddress(input) orelse return error.ExpectedAddress;
+    return .{ .two = .{ .start = addr1, .stop = addr2 }};
+}
 
 fn parseAddress(input: *io.StreamSource) !?Address {
     const byte = try input.reader().readByte();
@@ -184,11 +192,13 @@ fn parseAddress(input: *io.StreamSource) !?Address {
         try input.seekBy(-1);
         return Address{ .line = try parseLineNumber(input) };
     } else if (byte == '$') {
-        return Address{ .last };
+        return Address.last;
     } else if (byte == '/') {
         // TODO regex
+        return error.RegexUnsupported;
     } else if (byte == '\\') {
         // TODO regex
+        return error.RegexUnsupported;
     } else {
         return null;
     }
@@ -229,6 +239,47 @@ fn parseLineNumber(input: *io.StreamSource) !u64 {
         try input.seekBy(-1);
 
     return try fmt.parseInt(u64, buffer.getWritten(), 0);
+}
+
+test parseAddresses {
+    var source1 = testSource("123p");
+    const addr1 = try parseAddresses(&source1);
+    try testing.expectEqual(Addresses{ .one = .{ .line = 123 }}, addr1);
+
+    var source2 = testSource("123,456");
+    const addr2 = try parseAddresses(&source2);
+    try testing.expectEqual(Addresses{ .two = .{ .start = .{ .line = 123 }, .stop = .{ .line = 456}}}, addr2);
+
+    var source3 = testSource("p");
+    const addr3 = try parseAddresses(&source3);
+    try testing.expectEqual(Addresses.none, addr3);
+}
+
+test parseAddress {
+    var source1 = testSource("123");
+    const addr1 = try parseAddress(&source1);
+    try testing.expectEqual(Address{ .line = 123 }, addr1);
+
+    var source2 = testSource("$");
+    const addr2 = try parseAddress(&source2);
+    try testing.expectEqual(Address.last, addr2);
+
+    var source3 = testSource("-13");
+    const addr3 = try parseAddress(&source3);
+    try testing.expectEqual(null, addr3);
+
+    var source4 = testSource("d");
+    const addr4 = try parseAddress(&source4);
+    try testing.expectEqual(null, addr4);
+
+    var source5 = testSource("");
+    try testing.expectError(error.EndOfStream, parseAddress(&source5));
+
+    var source6 = testSource("/dog/");
+    try testing.expectError(error.RegexUnsupported, parseAddress(&source6));
+
+    var source7 = testSource("\\gcatg");
+    try testing.expectError(error.RegexUnsupported, parseAddress(&source7));
 }
 
 test parseLineNumber {
