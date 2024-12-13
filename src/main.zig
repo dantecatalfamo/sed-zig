@@ -45,7 +45,6 @@ const Addresses = union(enum){
 };
 
 const Command = union(enum) {
-
     // Sub-expression
     open_brace: void,
     close_brace: void,
@@ -189,9 +188,53 @@ pub fn main() !void {
 //     return try command_tuple.toOwnedSlice();
 // }
 
-// pub fn parseCommand(input: *io.StreamSource) !?CommandTuple {
+pub fn parseCommandTuple(allocator: mem.Allocator, input: *io.StreamSource) !?CommandTuple {
+    const addrs = try parseAddresses(allocator, input);
+    try gobbleSpace(input);
+    const command = try parseCommand(allocator, input);
 
-// }
+    return CommandTuple{ .addresses = addrs, .command = command };
+}
+
+fn parseCommand(allocator: mem.Allocator, input: *io.StreamSource) !?Command {
+    _ = allocator;
+    const reader = input.reader();
+
+    const char = try reader.readByte();
+    const command = switch (char) {
+        '{' => Command.open_brace,
+        '}' => Command.close_brace,
+        'a' => error.CommandNotImplemented,
+        'b' => error.CommandNotImplemented,
+        'c' => error.CommandNotImplemented,
+        'd' => Command.d,
+        'D' => Command.d_upper,
+        'g' => Command.g,
+        'G' => Command.g_upper,
+        'h' => Command.h,
+        'H' => Command.h_upper,
+        'i' => error.CommandNotImplemented,
+        'l' => Command.l,
+        'n' => Command.n,
+        'N' => Command.n_upper,
+        'p' => Command.p,
+        'P' => Command.p_upper,
+        'q' => Command.q,
+        'r' => error.CommandNotImplemented,
+        's' => error.CommandNotImplemented,
+        't' => error.CommandNotImplemented,
+        'w' => error.CommandNotImplemented,
+        'x' => Command.x,
+        'y' => error.CommandNotImplemented,
+        ':' => error.CommandNotImplemented,
+        '=' => Command.equal,
+        '#' => error.CommandNotImplemented,
+    };
+
+    try gobbleSpace(input);
+
+    return command;
+}
 
 fn parseAddresses(allocator: mem.Allocator, input: *io.StreamSource) !Addresses {
     const addr1 = try parseAddress(allocator, input) orelse return .none;
