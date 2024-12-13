@@ -12,8 +12,15 @@ const CommandTupleList = std.ArrayList(CommandTuple);
 
 const Address = union(enum) {
     line: u64,
-    context: []u8,
+    context: []const u8,
     last: void,
+
+    pub fn deinit(self: Address, allocator: mem.Allocator) void {
+        switch (self) {
+            .context => |context| allocator.free(context),
+            else => {}
+        }
+    }
 };
 
 const Addresses = union(enum){
@@ -24,6 +31,17 @@ const Addresses = union(enum){
         stop: Address,
         active: bool = false,
     },
+
+    pub fn deinit(self: Addresses, allocator: mem.Allocator) void {
+        switch (self) {
+            .one => |addr| addr.deinit(allocator),
+            .two => |addrs| {
+                addrs.start.deinit(allocator);
+                addrs.stop.deinit(allocator);
+            },
+            else => {}
+        }
+    }
 };
 
 const Command = union(enum) {
@@ -175,18 +193,18 @@ pub fn main() !void {
 
 // }
 
-fn parseAddresses(input: *io.StreamSource) !Addresses {
-    const addr1 = try parseAddress(input) orelse return .none;
+fn parseAddresses(allocator: mem.Allocator, input: *io.StreamSource) !Addresses {
+    const addr1 = try parseAddress(allocator, input) orelse return .none;
     try gobbleSpace(input);
     if (try input.reader().readByte() != ',') {
         try input.seekBy(-1);
         return .{ .one = addr1 };
     }
-    const addr2 = try parseAddress(input) orelse return error.ExpectedAddress;
+    const addr2 = try parseAddress(allocator, input) orelse return error.ExpectedAddress;
     return .{ .two = .{ .start = addr1, .stop = addr2 }};
 }
 
-fn parseAddress(input: *io.StreamSource) !?Address {
+fn parseAddress(allocator: mem.Allocator, input: *io.StreamSource) !?Address {
     const byte = try input.reader().readByte();
     if (std.ascii.isDigit(byte)) {
         try input.seekBy(-1);
@@ -194,11 +212,9 @@ fn parseAddress(input: *io.StreamSource) !?Address {
     } else if (byte == '$') {
         return Address.last;
     } else if (byte == '/') {
-        // TODO regex
-        return error.RegexUnsupported;
+        return Address{ .context = try parseContext(allocator, input, false) };
     } else if (byte == '\\') {
-        // TODO regex
-        return error.RegexUnsupported;
+        return Address{ .context = try parseContext(allocator, input, true) };
     } else {
         return null;
     }
@@ -241,53 +257,90 @@ fn parseLineNumber(input: *io.StreamSource) !u64 {
     return try fmt.parseInt(u64, buffer.getWritten(), 0);
 }
 
+fn parseContext(allocator: mem.Allocator, input: *io.StreamSource, special: bool) ![]const u8 {
+    const reader = input.reader();
+    const final = blk: {
+        if (!special)
+            break :blk '/';
+        break :blk try reader.readByte();
+    };
+    var escaped = false;
+    var address = std.ArrayList(u8).init(allocator);
+    errdefer address.deinit();
+
+    while (true) {
+        const char = try reader.readByte();
+        if (escaped) {
+            switch (char) {
+                'n' => try address.append('\n'),
+                else => try address.append(char),
+            }
+            escaped = false;
+        } else if (char == final) {
+            return try address.toOwnedSlice();
+        } else if (char == '\\') {
+            escaped = true;
+        } else {
+            try address.append(char);
+        }
+    }
+}
+
 test parseAddresses {
+    const allocator = testing.allocator;
+
     var source1 = testSource("123p");
-    const addr1 = try parseAddresses(&source1);
+    const addr1 = try parseAddresses(allocator, &source1);
     try testing.expectEqual(Addresses{ .one = .{ .line = 123 }}, addr1);
 
     var source2 = testSource("123,456");
-    const addr2 = try parseAddresses(&source2);
+    const addr2 = try parseAddresses(allocator, &source2);
     try testing.expectEqual(Addresses{ .two = .{ .start = .{ .line = 123 }, .stop = .{ .line = 456}}}, addr2);
 
     var source3 = testSource("p");
-    const addr3 = try parseAddresses(&source3);
+    const addr3 = try parseAddresses(allocator, &source3);
     try testing.expectEqual(Addresses.none, addr3);
 
     var source4 = testSource("123,d");
-    try testing.expectError(error.ExpectedAddress, parseAddresses(&source4));
+    try testing.expectError(error.ExpectedAddress, parseAddresses(allocator, &source4));
 
     var source5 = testSource("123,$");
-    const addr5 = try parseAddresses(&source5);
+    const addr5 = try parseAddresses(allocator, &source5);
     try testing.expectEqual(Addresses{ .two = .{ .start = .{ .line = 123 }, .stop = .last }}, addr5);
 
 }
 
 test parseAddress {
+    const allocator = testing.allocator;
+
     var source1 = testSource("123");
-    const addr1 = try parseAddress(&source1);
+    const addr1 = try parseAddress(allocator, &source1);
     try testing.expectEqual(Address{ .line = 123 }, addr1);
 
     var source2 = testSource("$");
-    const addr2 = try parseAddress(&source2);
+    const addr2 = try parseAddress(allocator, &source2);
     try testing.expectEqual(Address.last, addr2);
 
     var source3 = testSource("-13");
-    const addr3 = try parseAddress(&source3);
+    const addr3 = try parseAddress(allocator, &source3);
     try testing.expectEqual(null, addr3);
 
     var source4 = testSource("d");
-    const addr4 = try parseAddress(&source4);
+    const addr4 = try parseAddress(allocator, &source4);
     try testing.expectEqual(null, addr4);
 
     var source5 = testSource("");
-    try testing.expectError(error.EndOfStream, parseAddress(&source5));
+    try testing.expectError(error.EndOfStream, parseAddress(allocator, &source5));
 
-    var source6 = testSource("/dog/");
-    try testing.expectError(error.RegexUnsupported, parseAddress(&source6));
+    var source6 = testSource("/dog\\//");
+    const addr6 = try parseAddress(allocator, &source6);
+    defer addr6.?.deinit(allocator);
+    try testing.expectEqualDeep(Address{ .context = "dog/" }, addr6);
 
-    var source7 = testSource("\\gcatg");
-    try testing.expectError(error.RegexUnsupported, parseAddress(&source7));
+    var source7 = testSource("\\c\\cat\\nc");
+    const addr7 = try parseAddress(allocator, &source7);
+    defer addr7.?.deinit(allocator);
+    try testing.expectEqualDeep(Address{ .context = "cat\n" }, addr7);
 }
 
 test parseLineNumber {
@@ -302,6 +355,20 @@ test parseLineNumber {
     var source3 = testSource("10d");
     const line3 = try parseLineNumber(&source3);
     try testing.expectEqual(10, line3);
+}
+
+test parseContext {
+    const allocator = testing.allocator;
+
+    var source = testSource("123/");
+    var line = try parseContext(allocator, &source, false);
+    try testing.expectEqualSlices(u8, "123", line);
+    allocator.free(line);
+
+    source = testSource("c123c");
+    line = try parseContext(allocator, &source, true);
+    try testing.expectEqualSlices(u8, "123", line);
+    allocator.free(line);
 }
 
 fn testSource(input: []const u8) io.StreamSource {
