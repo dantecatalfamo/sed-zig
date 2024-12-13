@@ -178,17 +178,27 @@ pub fn main() !void {
     // back to read line
 }
 
-// pub fn parseCommands(allocator: mem.Allocator, input: *io.StreamSource) ![]CommandTuple {
-//     var command_tuple = CommandTupleList.init(allocator);
-//     errdefer command_tuple.deinit();
+pub fn parseCommands(allocator: mem.Allocator, input: *io.StreamSource) ![]CommandTuple {
+    var command_tuples = CommandTupleList.init(allocator);
+    errdefer command_tuples.deinit();
 
-//     // parseAddress
-//     // parseCommand
+    cmd_loop: while (true) {
+        gobbleSpace(input) catch |err| switch(err) {
+            error.EndOfStream => break :cmd_loop
+        };
 
-//     return try command_tuple.toOwnedSlice();
-// }
+        const byte = input.reader().readByte();
+        if (byte == ';' or byte == '\n')
+            continue;
 
-pub fn parseCommandTuple(allocator: mem.Allocator, input: *io.StreamSource) !?CommandTuple {
+        const command_tuple = try parseCommand(allocator, input);
+        try command_tuples.append(command_tuple);
+    }
+
+    return try command_tuples.toOwnedSlice();
+}
+
+pub fn parseCommandTuple(allocator: mem.Allocator, input: *io.StreamSource) !CommandTuple {
     const addrs = try parseAddresses(allocator, input);
     try gobbleSpace(input);
     const command = try parseCommand(allocator, input);
@@ -196,7 +206,7 @@ pub fn parseCommandTuple(allocator: mem.Allocator, input: *io.StreamSource) !?Co
     return CommandTuple{ .addresses = addrs, .command = command };
 }
 
-fn parseCommand(allocator: mem.Allocator, input: *io.StreamSource) !?Command {
+fn parseCommand(allocator: mem.Allocator, input: *io.StreamSource) !Command {
     _ = allocator;
     const reader = input.reader();
 
