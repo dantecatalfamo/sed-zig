@@ -253,6 +253,14 @@ test parseAddresses {
     var source3 = testSource("p");
     const addr3 = try parseAddresses(&source3);
     try testing.expectEqual(Addresses.none, addr3);
+
+    var source4 = testSource("123,d");
+    try testing.expectError(error.ExpectedAddress, parseAddresses(&source4));
+
+    var source5 = testSource("123,$");
+    const addr5 = try parseAddresses(&source5);
+    try testing.expectEqual(Addresses{ .two = .{ .start = .{ .line = 123 }, .stop = .last }}, addr5);
+
 }
 
 test parseAddress {
