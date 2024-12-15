@@ -149,9 +149,6 @@ const CommandTuple = struct {
     command: Command,
 };
 
-var PatternSpace = [8192]u8{};
-var HoldSpace = [8192]u8{};
-
 pub fn main() !void {
     // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
     // std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
@@ -177,6 +174,14 @@ pub fn main() !void {
     // pre-next-line-commands (append, etc.)
     // back to read line
 }
+
+
+const State = struct {
+    patternSpace: [8192]u8,
+    holdSpace: [8192]u8,
+    line: u64,
+    commandTuples: []CommandTuple,
+};
 
 pub fn parseCommands(allocator: mem.Allocator, input: *io.StreamSource) ![]CommandTuple {
     var command_tuples = CommandTupleList.init(allocator);
