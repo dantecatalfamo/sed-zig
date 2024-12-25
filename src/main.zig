@@ -7,6 +7,7 @@ const mem = std.mem;
 const io = std.io;
 const fmt = std.fmt;
 const testing = std.testing;
+const log = std.log;
 
 const CommandTupleList = std.ArrayList(CommandTuple);
 
@@ -23,14 +24,16 @@ const Address = union(enum) {
     }
 };
 
+const TwoAddress = struct {
+    start: Address,
+    stop: Address,
+    active: bool = false,
+};
+
 const Addresses = union(enum){
     none: void,
     one: Address,
-    two: struct {
-        start: Address,
-        stop: Address,
-        active: bool = false,
-    },
+    two: TwoAddress,
 
     pub fn deinit(self: Addresses, allocator: mem.Allocator) void {
         switch (self) {
@@ -150,6 +153,22 @@ const CommandTuple = struct {
 };
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    if (std.os.argv.len < 2) {
+        return error.NotEnoughArguments;
+    }
+
+    const comm: []const u8 = std.mem.span(std.os.argv[1]);
+    const stream = io.fixedBufferStream(comm);
+    var input = io.StreamSource{.const_buffer = stream};
+    const commands = try parseCommands(allocator, &input);
+
+    for (commands) |command| {
+        std.log.debug("addr: {any}, inverted: {any}, command: {any}", .{ command.addresses, command.invert_match, command.command });
+    }
+
     // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
     // std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
 
@@ -187,28 +206,52 @@ pub fn parseCommands(allocator: mem.Allocator, input: *io.StreamSource) ![]Comma
     var command_tuples = CommandTupleList.init(allocator);
     errdefer command_tuples.deinit();
 
+    log.debug("parsecommand pos: {d}", .{ try input.getPos() });
+
     cmd_loop: while (true) {
         gobbleSpace(input) catch |err| switch(err) {
-            error.EndOfStream => break :cmd_loop
+            error.EndOfStream => break :cmd_loop,
+            else => return err
         };
 
-        const byte = input.reader().readByte();
-        if (byte == ';' or byte == '\n')
-            continue;
+        log.debug("after gobble: {d}", .{ try input.getPos() });
 
-        const command_tuple = try parseCommand(allocator, input);
-        try command_tuples.append(command_tuple);
+        const byte = try input.reader().readByte();
+        if (byte == ';' or byte == '\n')
+            continue
+        else {
+            log.debug("parseCommands byte put back: {c}", .{ byte });
+            try input.seekBy(-1);
+        }
+
+        const command_tuple = try parseCommandTuple(allocator, input);
+        if (command_tuple) |exists|
+            try command_tuples.append(exists)
+        else
+            break;
     }
 
     return try command_tuples.toOwnedSlice();
 }
 
-pub fn parseCommandTuple(allocator: mem.Allocator, input: *io.StreamSource) !CommandTuple {
+pub fn parseCommandTuple(allocator: mem.Allocator, input: *io.StreamSource) !?CommandTuple {
+    // if (try input.getPos() == try input.getEndPos()) {
+    //     return null;
+    // }
+    log.debug("in parseCommandTuple", .{});
     const addrs = try parseAddresses(allocator, input);
+    try gobbleSpace(input);
+    var inverted = false;
+    const byte = try input.reader().readByte();
+    if (byte == '!') {
+        inverted = true;
+    } else {
+        try input.seekBy(-1);
+    }
     try gobbleSpace(input);
     const command = try parseCommand(allocator, input);
 
-    return CommandTuple{ .addresses = addrs, .command = command };
+    return CommandTuple{ .addresses = addrs, .command = command, .invert_match = inverted };
 }
 
 fn parseCommand(allocator: mem.Allocator, input: *io.StreamSource) !Command {
@@ -242,11 +285,15 @@ fn parseCommand(allocator: mem.Allocator, input: *io.StreamSource) !Command {
         'x' => Command.x,
         'y' => error.CommandNotImplemented,
         ':' => error.CommandNotImplemented,
-        '=' => Command.equal,
+        '=' => Command{ .equal = {} },
         '#' => error.CommandNotImplemented,
+        else => error.UnsupportedCommand,
     };
 
-    try gobbleSpace(input);
+    gobbleSpace(input) catch |err| switch (err) {
+        error.EndOfStream => {},
+        else => return err,
+    };
 
     return command;
 }
@@ -280,13 +327,9 @@ fn parseAddress(allocator: mem.Allocator, input: *io.StreamSource) !?Address {
 
 fn gobbleSpace(input: *io.StreamSource) !void {
     const reader = input.reader();
-    var byte = try reader.readByte();
+    var byte: u8 = ' ';
     while (byte == ' ' or byte == '\t') {
-        byte = reader.readByte() catch |err| {
-            if (err == error.EndOfStream)
-                break;
-            return err;
-        };
+        byte = try reader.readByte();
     }
     try input.seekBy(-1);
 }
